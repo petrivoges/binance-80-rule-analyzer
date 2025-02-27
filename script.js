@@ -64,7 +64,7 @@ async function analyzeData() {
     }
 }
 
-// Fetch k-line data from Binance API with pagination
+// Fetch k-line data from Binance API with pagination and logging
 async function fetchKlines(coin, interval, date) {
     const startTime = new Date(date + 'T00:00:00Z').getTime();
     const endTime = startTime + 86400000; // 24 hours
@@ -78,16 +78,17 @@ async function fetchKlines(coin, interval, date) {
         const data = await response.json();
         if (data.length === 0) break;
         allKlines = allKlines.concat(data);
+        console.log(`Fetched ${data.length} klines for ${coin} on ${date} in batch. Total klines: ${allKlines.length}`);
         lastTime = data[data.length - 1][6] + 1; // Next start time (close time + 1ms)
-        await new Promise(r => setTimeout(r, 100)); // Delay to avoid rate limit
+        await new Promise(r => setTimeout(r, 200)); // Delay to avoid rate limits
     }
     return allKlines.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) }));
 }
 
-// Calculate value area (VAL and VAH) for 80% of volume
-function calculateValueArea(klines) {
+// Calculate value area (VAL and VAH) for 80% of volume with edge case handling
+function calculateValueArea(klines, coin, date) {
     if (klines.length === 0) {
-        console.warn('No kline data available for value area calculation');
+        console.warn(`No kline data for value area calculation for coin: ${coin}, date: ${date}`);
         return { val: null, vah: null };
     }
 
@@ -101,8 +102,8 @@ function calculateValueArea(klines) {
     });
 
     const sortedPrices = Object.keys(priceVolume).map(Number).sort((a, b) => a - b);
-    if (sortedPrices.length === 0) {
-        console.warn('No price data available for value area calculation');
+    if (sortedPrices.length === 0 || totalVolume === 0) {
+        console.warn(`No valid price data or total volume is zero for coin: ${coin}, date: ${date}`);
         return { val: null, vah: null };
     }
 
@@ -129,22 +130,22 @@ function calculateValueArea(klines) {
     return { val, vah };
 }
 
-// Analyze a coin for a single day
+// Analyze a coin for a single day with logging for edge cases
 async function analyzeCoinForDay(coin, date) {
     const prevDay = new Date(date);
     prevDay.setDate(prevDay.getDate() - 1);
     const prevDayStr = prevDay.toISOString().split('T')[0];
 
     const prevKlines = await fetchKlines(coin, '1m', prevDayStr);
-    const valueArea = calculateValueArea(prevKlines);
+    const valueArea = calculateValueArea(prevKlines, coin, prevDayStr);
     if (valueArea.val === null || valueArea.vah === null) {
-        console.warn(`Skipping analysis for ${coin} on ${date} due to insufficient data for value area calculation`);
+        console.warn(`Skipping analysis for ${coin} on ${date} due to invalid value area for ${prevDayStr}`);
         return null;
     }
 
     const currentKlines = await fetchKlines(coin, '30m', date);
     if (currentKlines.length === 0) {
-        console.warn(`No kline data available for ${coin} on ${date}`);
+        console.warn(`No kline data for analysis for coin: ${coin}, date: ${date}`);
         return null;
     }
 
@@ -160,7 +161,7 @@ async function analyzeCoinForDay(coin, date) {
     return null;
 }
 
-// Analyze all coins over the date range
+// Analyze all coins over the date range with increased delay
 async function analyzeCoins(coins, startDate, endDate) {
     const dates = getDatesInRange(startDate, endDate);
     const results = {};
@@ -169,7 +170,7 @@ async function analyzeCoins(coins, startDate, endDate) {
         results[date] = {};
         for (const coin of coins) {
             results[date][coin] = await analyzeCoinForDay(coin, date);
-            await new Promise(r => setTimeout(r, 100)); // Rate limit delay
+            await new Promise(r => setTimeout(r, 200)); // Delay to avoid rate limits
         }
     }
     return results;
