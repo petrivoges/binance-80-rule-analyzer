@@ -6,27 +6,24 @@ $(document).ready(function() {
 // Initialize coin dropdown with search functionality
 async function initCoinSelect() {
     try {
-        // Fetch exchange info once
         const response = await fetch('https://api.binance.com/api/v3/exchangeInfo');
         if (!response.ok) {
             throw new Error('Failed to fetch exchange info');
         }
         const data = await response.json();
 
-        // Filter for USDT trading pairs and format for Select2
         const usdtSymbols = data.symbols
             .filter(symbol => symbol.quoteAsset === 'USDT' && symbol.status === 'TRADING')
             .map(symbol => ({
-                id: symbol.symbol,   // Unique identifier for the option
-                text: symbol.symbol  // Display text in the dropdown
+                id: symbol.symbol,
+                text: symbol.symbol
             }));
 
-        // Initialize Select2 with local data
         $('#coins').select2({
             data: usdtSymbols,
             placeholder: "Select up to 10 coins (searchable)",
-            maximumSelectionLength: 10, // Limit selections to 10
-            width: '100%'              // Adjust width as needed
+            maximumSelectionLength: 10,
+            width: '100%'
         });
     } catch (error) {
         console.error('Error initializing coin select:', error);
@@ -67,19 +64,33 @@ async function analyzeData() {
     }
 }
 
-// Fetch k-line data from Binance API
+// Fetch k-line data from Binance API with pagination
 async function fetchKlines(coin, interval, date) {
     const startTime = new Date(date + 'T00:00:00Z').getTime();
     const endTime = startTime + 86400000; // 24 hours
-    const url = `https://api.binance.com/api/v3/klines?symbol=${coin}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=1000`;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to fetch klines for ${coin} on ${date}: ${response.status}`);
-    const data = await response.json();
-    return data.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) }));
+    let allKlines = [];
+    let lastTime = startTime;
+
+    while (lastTime < endTime) {
+        const url = `https://api.binance.com/api/v3/klines?symbol=${coin}&interval=${interval}&startTime=${lastTime}&endTime=${endTime}&limit=1000`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to fetch klines for ${coin} on ${date}: ${response.status}`);
+        const data = await response.json();
+        if (data.length === 0) break;
+        allKlines = allKlines.concat(data.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) })));
+        lastTime = data[data.length - 1][0] + 1; // Next start time
+        await new Promise(resolve => setTimeout(resolve, 100)); // Delay to avoid rate limit
+    }
+    return allKlines;
 }
 
 // Calculate value area (VAL and VAH) for 80% of volume
 function calculateValueArea(klines) {
+    if (klines.length === 0) {
+        console.warn('No kline data available for value area calculation');
+        return { val: null, vah: null };
+    }
+
     const priceVolume = {};
     let totalVolume = 0;
 
@@ -90,6 +101,11 @@ function calculateValueArea(klines) {
     });
 
     const sortedPrices = Object.keys(priceVolume).map(Number).sort((a, b) => a - b);
+    if (sortedPrices.length === 0) {
+        console.warn('No price data available for value area calculation');
+        return { val: null, vah: null };
+    }
+
     const poc = sortedPrices.reduce((max, p) => priceVolume[p] > priceVolume[max] ? p : max, sortedPrices[0]);
     let coveredVolume = priceVolume[poc];
     let val = poc, vah = poc;
@@ -121,7 +137,16 @@ async function analyzeCoinForDay(coin, date) {
 
     const prevKlines = await fetchKlines(coin, '1m', prevDayStr);
     const valueArea = calculateValueArea(prevKlines);
+    if (valueArea.val === null || valueArea.vah === null) {
+        console.warn(`Skipping analysis for ${coin} on ${date} due to insufficient data for value area calculation`);
+        return null;
+    }
+
     const currentKlines = await fetchKlines(coin, '30m', date);
+    if (currentKlines.length === 0) {
+        console.warn(`No kline data available for ${coin} on ${date}`);
+        return null;
+    }
 
     if (currentKlines[0].open >= valueArea.val) return null; // Open not below VAL
 
