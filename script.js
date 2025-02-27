@@ -83,7 +83,7 @@ async function fetchKlines(coin, interval, date) {
         allKlines = allKlines.concat(data);
         console.log(`Fetched ${data.length} klines for ${coin} on ${date} in batch. Total klines: ${allKlines.length}`);
         lastTime = data[data.length - 1][6] + 1; // Next start time (close time + 1ms)
-        await new Promise(r => setTimeout(r, 400)); // Delay to avoid rate limits
+        await new Promise(r => setTimeout(r, 200)); // Delay to avoid rate limits
     }
     return allKlines.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) }));
 }
@@ -253,4 +253,76 @@ function displayTable(results, coins, dates) {
                                     <td>${data.prevVal ? data.prevVal.toFixed(2) : 'N/A'}</td>
                                     <td>${data.prevVah ? data.prevVah.toFixed(2) : 'N/A'}</td>
                                     <td>${data.tradeTriggered ? 'Yes' : 'No'}</td>
-                                    <td>${data.entryPrice ? data.entryPrice.toFixed(2) : '-'
+                                    <td>${data.entryPrice ? data.entryPrice.toFixed(2) : '-'}</td>
+                                    <td>${data.exitPrice ? data.exitPrice.toFixed(2) : '-'}</td>
+                                    <td>${data.roi !== null ? data.roi.toFixed(2) : '0.00'}</td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+        resultsDiv.append(tableHtml);
+    });
+}
+
+// Display results in a chart
+function displayChart(results, coins, dates) {
+    const canvas = document.getElementById('roiChart');
+    if (!canvas) {
+        console.error('Canvas element with ID "roiChart" not found in DOM');
+        return;
+    }
+    if (currentChart) {
+        currentChart.destroy(); // Destroy previous chart to avoid "Canvas is already in use" error
+    }
+    const ctx = canvas.getContext('2d');
+    const datasets = coins.map(coin => {
+        const data = dates.map(date => results[date][coin].roi || 0);
+        return {
+            label: coin,
+            data: data,
+            borderColor: getRandomColor(),
+            fill: false
+        };
+    });
+
+    currentChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: dates,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: { display: true },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) label += ': ';
+                            if (context.parsed.y !== null) label += context.parsed.y.toFixed(2) + '%';
+                            return label;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { display: true, title: { display: true, text: 'Date' } },
+                y: { display: true, title: { display: true, text: 'ROI (%)' } }
+            }
+        }
+    });
+}
+
+// Helper function to generate random colors
+function getRandomColor() {
+    const letters = '0123456789ABCDEF';
+    let color = '#';
+    for (let i = 0; i < 6; i++) {
+        color += letters[Math.floor(Math.random() * 16)];
+    }
+    return color;
+}
