@@ -6,18 +6,27 @@ $(document).ready(function() {
 // Initialize coin dropdown with search functionality
 async function initCoinSelect() {
     try {
+        // Fetch exchange info once
         const response = await fetch('https://api.binance.com/api/v3/exchangeInfo');
-        if (!response.ok) throw new Error('Failed to fetch exchange info');
+        if (!response.ok) {
+            throw new Error('Failed to fetch exchange info');
+        }
         const data = await response.json();
+
+        // Filter for USDT trading pairs and format for Select2
         const usdtSymbols = data.symbols
             .filter(symbol => symbol.quoteAsset === 'USDT' && symbol.status === 'TRADING')
-            .map(symbol => ({ id: symbol.symbol, text: symbol.symbol }));
+            .map(symbol => ({
+                id: symbol.symbol,   // Unique identifier for the option
+                text: symbol.symbol  // Display text in the dropdown
+            }));
 
+        // Initialize Select2 with local data
         $('#coins').select2({
             data: usdtSymbols,
             placeholder: "Select up to 10 coins (searchable)",
-            maximumSelectionLength: 10,
-            width: '100%'
+            maximumSelectionLength: 10, // Limit selections to 10
+            width: '100%'              // Adjust width as needed
         });
     } catch (error) {
         console.error('Error initializing coin select:', error);
