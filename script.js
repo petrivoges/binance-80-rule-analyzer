@@ -71,17 +71,17 @@ async function fetchKlines(coin, interval, date) {
     let allKlines = [];
     let lastTime = startTime;
 
-    while (lastTime < endTime) {
+    while (true) {
         const url = `https://api.binance.com/api/v3/klines?symbol=${coin}&interval=${interval}&startTime=${lastTime}&endTime=${endTime}&limit=1000`;
         const response = await fetch(url);
         if (!response.ok) throw new Error(`Failed to fetch klines for ${coin} on ${date}: ${response.status}`);
         const data = await response.json();
         if (data.length === 0) break;
-        allKlines = allKlines.concat(data.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) })));
-        lastTime = data[data.length - 1][0] + 1; // Next start time
-        await new Promise(resolve => setTimeout(resolve, 100)); // Delay to avoid rate limit
+        allKlines = allKlines.concat(data);
+        lastTime = data[data.length - 1][6] + 1; // Next start time (close time + 1ms)
+        await new Promise(r => setTimeout(r, 100)); // Delay to avoid rate limit
     }
-    return allKlines;
+    return allKlines.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) }));
 }
 
 // Calculate value area (VAL and VAH) for 80% of volume
@@ -169,7 +169,7 @@ async function analyzeCoins(coins, startDate, endDate) {
         results[date] = {};
         for (const coin of coins) {
             results[date][coin] = await analyzeCoinForDay(coin, date);
-            await new Promise(resolve => setTimeout(resolve, 100)); // Rate limit delay
+            await new Promise(r => setTimeout(r, 100)); // Rate limit delay
         }
     }
     return results;
@@ -191,7 +191,7 @@ function getDatesInRange(start, end) {
 function displayChart(results, coins, dates) {
     const ctx = document.getElementById('roiChart').getContext('2d');
     const datasets = coins.map(coin => {
-        const data = dates.map(date => results[date][coin]);
+        const data = dates.map(date => results[date][coin] || 0); // Default to 0 if null
         return {
             label: coin,
             data: data,
