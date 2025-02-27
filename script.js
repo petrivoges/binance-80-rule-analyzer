@@ -170,7 +170,7 @@ async function analyzeCoins(coins, startDate, endDate) {
         results[date] = {};
         for (const coin of coins) {
             results[date][coin] = await analyzeCoinForDay(coin, date);
-            await new Promise(r => setTimeout(r, 200)); // Delay to avoid rate limits
+            await new Promise(r => setTimeout(r, 400)); // Delay to avoid rate limits
         }
     }
     return results;
@@ -188,9 +188,14 @@ function getDatesInRange(start, end) {
     return dates;
 }
 
-// Display results in a chart
+// Display results in a chart with check for canvas element
 function displayChart(results, coins, dates) {
-    const ctx = document.getElementById('roiChart').getContext('2d');
+    const canvas = document.getElementById('roiChart');
+    if (!canvas) {
+        console.error('Canvas element with ID "roiChart" not found in DOM');
+        return;
+    }
+    const ctx = canvas.getContext('2d');
     const datasets = coins.map(coin => {
         const data = dates.map(date => results[date][coin] || 0); // Default to 0 if null
         return {
