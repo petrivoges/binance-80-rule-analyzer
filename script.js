@@ -1,91 +1,124 @@
-// Fetch available coins from Binance and populate the dropdown
-async function fetchCoins() {
-    try {
-        const response = await fetch('https://api.binance.com/api/v3/exchangeInfo');
-        const data = await response.json();
-        const coins = data.symbols
-            .filter(symbol => symbol.quoteAsset === 'USDT')
-            .map(symbol => symbol.symbol);
-        const select = document.getElementById('coins');
-        coins.forEach(coin => {
-            const option = document.createElement('option');
-            option.value = coin;
-            option.text = coin;
-            select.appendChild(option);
-        });
-    } catch (error) {
-        console.error('Error fetching coins:', error);
-        alert('Failed to load coin list. Please try again later.');
-    }
-}
+$(document).ready(function() {
+    // Initialize Select2 for coin selection
+    $('#coins').select2({
+        placeholder: "Search for coins (e.g., BTCUSDT)",
+        maximumSelectionLength: 10,
+        ajax: {
+            url: 'https://api.binance.com/api/v3/exchangeInfo',
+            dataType: 'json',
+            delay: 250,
+            processResults: function(data) {
+                return {
+                    results: data.symbols
+                        .filter(symbol => symbol.quoteAsset === 'USDT' && symbol.status === 'TRADING')
+                        .map(symbol => ({ id: symbol.symbol, text: symbol.symbol }))
+                };
+            },
+            cache: true
+        }
+    });
 
-fetchCoins();
+    // Analyze button click handler
+    $('#analyze').click(async function() {
+        const selectedCoins = $('#coins').val();
+        const startDate = $('#startDate').val();
+        const endDate = $('#endDate').val();
+
+        // Input validation
+        if (!selectedCoins || selectedCoins.length === 0) {
+            alert('Please select at least one coin.');
+            return;
+        }
+        if (selectedCoins.length > 10) {
+            alert('Please select no more than 10 coins.');
+            return;
+        }
+        if (!startDate || !endDate) {
+            alert('Please select both start and end dates.');
+            return;
+        }
+        if (new Date(startDate) > new Date(endDate)) {
+            alert('Start date must be before end date.');
+            return;
+        }
+
+        // Show loading indicator
+        $('#results').html('');
+        $('#loading').show();
+
+        try {
+            const results = await analyzeCoins(selectedCoins, startDate, endDate);
+            displayResults(results, selectedCoins, startDate, endDate);
+        } catch (error) {
+            console.error('Analysis failed:', error);
+            $('#results').html('<div class="alert alert-danger">An error occurred during analysis. Please check your internet connection and try again.</div>');
+        } finally {
+            $('#loading').hide();
+        }
+    });
+});
 
 // Fetch k-line data from Binance API
 async function fetchKlines(coin, interval, date) {
-    const startTime = new Date(date).getTime();
+    const startTime = new Date(date + 'T00:00:00Z').getTime();
     const endTime = startTime + 86400000; // 24 hours in milliseconds
     try {
         const response = await fetch(
-            `https://api.binance.com/api/v3/klines?symbol=${coin}&interval=${interval}&startTime=${startTime}&endTime=${endTime}`
+            `https://api.binance.com/api/v3/klines?symbol=${coin}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=1000`
         );
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
         const data = await response.json();
+        if (!Array.isArray(data) || data.length === 0) {
+            throw new Error('No data returned from API');
+        }
         return data.map(d => ({
             open: parseFloat(d[1]),
-            high: parseFloat(d[2]),
-            low: parseFloat(d[3]),
             close: parseFloat(d[4]),
-            volume: parseFloat(d[5]),
+            volume: parseFloat(d[5])
         }));
     } catch (error) {
-        console.error(`Error fetching klines for ${coin} on ${date}:`, error);
+        console.error(`Error fetching ${interval} klines for ${coin} on ${date}:`, error);
         return null;
     }
 }
 
-// Calculate the value area (VAL and VAH) from 1-minute klines
-async function calculateValueArea(coin, date) {
-    const klines = await fetchKlines(coin, '1m', date);
-    if (!klines) return null;
+// Calculate value area (VAL and VAH) from 5-minute klines
+function calculateValueArea(klines) {
+    if (!klines || klines.length === 0) return null;
 
     const priceVolume = {};
     let totalVolume = 0;
     klines.forEach(k => {
-        const price = k.close.toFixed(8); // Use string to avoid floating-point issues
-        const volume = k.volume;
-        if (!priceVolume[price]) priceVolume[price] = 0;
-        priceVolume[price] += volume;
-        totalVolume += volume;
+        const price = Math.round(k.close * 100) / 100; // Round to 2 decimal places
+        priceVolume[price] = (priceVolume[price] || 0) + k.volume;
+        totalVolume += k.volume;
     });
 
-    const sortedPrices = Object.keys(priceVolume)
-        .map(p => parseFloat(p))
-        .sort((a, b) => a - b);
-    const poc = sortedPrices.reduce((a, b) => priceVolume[a] > priceVolume[b] ? a : b);
+    // Find Point of Control (POC)
+    const poc = Object.entries(priceVolume).reduce((a, b) => a[1] > b[1] ? a : b)[0];
+    const sortedPrices = Object.keys(priceVolume).map(Number).sort((a, b) => a - b);
     let coveredVolume = priceVolume[poc];
-    let val = poc;
-    let vah = poc;
+    let val = Number(poc);
+    let vah = Number(poc);
 
+    // Expand from POC to cover 70% of volume
     while (coveredVolume < 0.7 * totalVolume) {
         const valIdx = sortedPrices.indexOf(val);
         const vahIdx = sortedPrices.indexOf(vah);
         const below = valIdx > 0 ? sortedPrices[valIdx - 1] : null;
         const above = vahIdx < sortedPrices.length - 1 ? sortedPrices[vahIdx + 1] : null;
 
-        if (below && above) {
-            if (priceVolume[below] > priceVolume[above]) {
-                val = below;
-                coveredVolume += priceVolume[below];
-            } else {
-                vah = above;
-                coveredVolume += priceVolume[above];
-            }
-        } else if (below) {
+        const belowVolume = below ? priceVolume[below] : 0;
+        const aboveVolume = above ? priceVolume[above] : 0;
+
+        if (below && (!above || belowVolume >= aboveVolume)) {
             val = below;
-            coveredVolume += priceVolume[below];
+            coveredVolume += belowVolume;
         } else if (above) {
             vah = above;
-            coveredVolume += priceVolume[above];
+            coveredVolume += aboveVolume;
         } else {
             break;
         }
@@ -93,21 +126,55 @@ async function calculateValueArea(coin, date) {
     return { val, vah };
 }
 
-// Calculate ROI based on the 80% rule
-function calculateROI(dayData, valueArea) {
-    if (!dayData || dayData.length < 2 || !valueArea) return null;
-    const openPrice = dayData[0].open;
-    const lastTwoBars = dayData.slice(-2);
+// Analyze a single coin for a single day
+async function analyzeCoinForDay(coin, date) {
+    const prevDay = new Date(date);
+    prevDay.setDate(prevDay.getDate() - 1);
+    const prevDayStr = prevDay.toISOString().split('T')[0];
 
-    if (
-        openPrice < valueArea.val &&
-        lastTwoBars.every(bar => bar.close >= valueArea.val && bar.close <= valueArea.vah)
-    ) {
-        const buyPrice = lastTwoBars[0].close;
-        const sellPrice = dayData[dayData.length - 1].close;
-        return ((sellPrice - buyPrice) / buyPrice) * 100;
+    // Fetch and calculate value area from previous day
+    const prevKlines = await fetchKlines(coin, '5m', prevDayStr);
+    if (!prevKlines) return null;
+
+    const valueArea = calculateValueArea(prevKlines);
+    if (!valueArea) return null;
+
+    // Fetch current day's 30-minute klines
+    const currentKlines = await fetchKlines(coin, '30m', date);
+    if (!currentKlines || currentKlines.length < 2) return null;
+
+    // Check 80% rule condition
+    const openPrice = currentKlines[0].open;
+    if (openPrice >= valueArea.val) {
+        return null; // Open not below VAL, no trade
     }
-    return null;
+
+    // Find first two consecutive 30m bars with close > VAL
+    for (let i = 1; i < currentKlines.length; i++) {
+        if (currentKlines[i-1].close > valueArea.val && currentKlines[i].close > valueArea.val) {
+            const buyPrice = currentKlines[i].close;
+            const sellPrice = currentKlines[currentKlines.length - 1].close;
+            const roi = ((sellPrice - buyPrice) / buyPrice) * 100;
+            return roi;
+        }
+    }
+    return null; // No trade condition met
+}
+
+// Analyze all selected coins over the date range
+async function analyzeCoins(coins, startDate, endDate) {
+    const dates = getDatesInRange(startDate, endDate);
+    const results = {};
+
+    for (const date of dates) {
+        results[date] = {};
+        for (const coin of coins) {
+            results[date][coin] = await analyzeCoinForDay(coin, date);
+            // Delay to respect Binance API rate limits (e.g., 1200 requests/minute)
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    }
+    return results;
 }
 
 // Get array of dates in the range
@@ -122,86 +189,31 @@ function getDatesInRange(start, end) {
     return dates;
 }
 
-// Get the previous day's date
-function getPreviousDay(date) {
-    const prev = new Date(date);
-    prev.setDate(prev.getDate() - 1);
-    return prev.toISOString().split('T')[0];
-}
-
-// Analyze coins over the date range
-async function analyzeCoins(coins, startDate, endDate) {
-    const results = {};
-    const dates = getDatesInRange(startDate, endDate);
-
-    for (const coin of coins) {
-        results[coin] = {};
-        for (const date of dates) {
-            const prevDay = getPreviousDay(date);
-            const valueArea = await calculateValueArea(coin, prevDay);
-            const dayData = await fetchKlines(coin, '30m', date);
-            const roi = calculateROI(dayData, valueArea);
-            results[coin][date] = roi;
-            // Add delay to respect API rate limits
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-    }
-    return results;
-}
-
 // Display results in a table
-function displayResults(results) {
-    const table = document.createElement('table');
-    const headerRow = document.createElement('tr');
-    headerRow.innerHTML = '<th>Date</th>' + Object.keys(results).map(coin => `<th>${coin}</th>`).join('');
-    table.appendChild(headerRow);
+function displayResults(results, coins, startDate, endDate) {
+    const table = $('<table class="table table-bordered table-hover"></table>');
+    const headerRow = $('<tr><th scope="col">Date</th></tr>');
+    coins.forEach(coin => headerRow.append(`<th scope="col">${coin}</th>`));
+    table.append(headerRow);
 
-    const dates = Object.keys(results[Object.keys(results)[0]]);
+    const dates = getDatesInRange(startDate, endDate);
     dates.forEach(date => {
-        const row = document.createElement('tr');
-        row.innerHTML = `<td>${date}</td>`;
-        Object.keys(results).forEach(coin => {
-            const roi = results[coin][date];
-            const cell = document.createElement('td');
-            if (roi !== null) {
-                cell.textContent = roi.toFixed(2) + '%';
-                if (roi > 3) cell.className = 'green';
-                else if (roi > 0) cell.className = 'yellow';
-                else cell.className = 'red';
+        const row = $(`<tr><td>${date}</td></tr>`);
+        coins.forEach(coin => {
+            const roi = results[date][coin];
+            const cell = $('<td></td>');
+            if (roi !== null && !isNaN(roi)) {
+                cell.text(roi.toFixed(2) + '%');
+                if (roi > 3) cell.addClass('green');
+                else if (roi > 0) cell.addClass('yellow');
+                else cell.addClass('red');
             } else {
-                cell.textContent = '-';
+                cell.text('–');
             }
-            row.appendChild(cell);
+            row.append(cell);
         });
-        table.appendChild(row);
+        table.append(row);
     });
 
-    const resultsDiv = document.getElementById('results');
-    resultsDiv.innerHTML = '';
-    resultsDiv.appendChild(table);
+    $('#results').html(table);
 }
-
-// Handle the analyze button click
-document.getElementById('analyze').addEventListener('click', async () => {
-    const selectedCoins = Array.from(document.getElementById('coins').selectedOptions).map(option => option.value);
-    const startDate = document.getElementById('startDate').value;
-    const endDate = document.getElementById('endDate').value;
-
-    if (selectedCoins.length > 10) {
-        alert('Please select up to 10 coins.');
-        return;
-    }
-    if (!startDate || !endDate) {
-        alert('Please select start and end dates.');
-        return;
-    }
-
-    document.getElementById('results').innerHTML = 'Analyzing... This may take a moment.';
-    try {
-        const results = await analyzeCoins(selectedCoins, startDate, endDate);
-        displayResults(results);
-    } catch (error) {
-        console.error('Analysis failed:', error);
-        document.getElementById('results').innerHTML = 'An error occurred during analysis. Please try again.';
-    }
-});
