@@ -3,28 +3,19 @@ $(document).ready(function() {
     $('#analyze').click(analyzeData);
 });
 
-// Initialize coin dropdown with top 100 coins and search functionality
+// Initialize coin dropdown with search functionality
 async function initCoinSelect() {
     try {
-        const top100Symbols = await fetchTopCoins();
-        const top100Options = top100Symbols.map(symbol => ({ id: symbol, text: symbol }));
+        const response = await fetch('https://api.binance.com/api/v3/exchangeInfo');
+        if (!response.ok) throw new Error('Failed to fetch exchange info');
+        const data = await response.json();
+        const usdtSymbols = data.symbols
+            .filter(symbol => symbol.quoteAsset === 'USDT' && symbol.status === 'TRADING')
+            .map(symbol => ({ id: symbol.symbol, text: symbol.symbol }));
 
         $('#coins').select2({
-            data: top100Options,
-            ajax: {
-                url: 'https://api.binance.com/api/v3/exchangeInfo',
-                dataType: 'json',
-                delay: 250,
-                processResults: function(data) {
-                    return {
-                        results: data.symbols
-                            .filter(symbol => symbol.quoteAsset === 'USDT' && symbol.status === 'TRADING')
-                            .map(symbol => ({ id: symbol.symbol, text: symbol.symbol }))
-                    };
-                },
-                cache: true
-            },
-            placeholder: "Select or search for coins (e.g., BTCUSDT)",
+            data: usdtSymbols,
+            placeholder: "Select up to 10 coins (searchable)",
             maximumSelectionLength: 10,
             width: '100%'
         });
@@ -34,30 +25,12 @@ async function initCoinSelect() {
     }
 }
 
-// Fetch top 100 coins by trading volume
-async function fetchTopCoins() {
-    const exchangeInfoResponse = await fetch('https://api.binance.com/api/v3/exchangeInfo');
-    const exchangeInfo = await exchangeInfoResponse.json();
-    const usdtSymbols = exchangeInfo.symbols
-        .filter(symbol => symbol.quoteAsset === 'USDT' && symbol.status === 'TRADING')
-        .map(symbol => symbol.symbol);
-
-    const tickerResponse = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbols=${JSON.stringify(usdtSymbols)}`);
-    const tickers = await tickerResponse.json();
-
-    return tickers
-        .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
-        .slice(0, 100)
-        .map(ticker => ticker.symbol);
-}
-
 // Analyze selected coins over the date range
 async function analyzeData() {
     const selectedCoins = $('#coins').val();
     const startDate = $('#startDate').val();
     const endDate = $('#endDate').val();
 
-    // Input validation
     if (!selectedCoins || selectedCoins.length === 0) {
         alert('Please select at least one coin.');
         return;
@@ -76,10 +49,10 @@ async function analyzeData() {
 
     try {
         const results = await analyzeCoins(selectedCoins, startDate, endDate);
-        displayResults(results, selectedCoins, getDatesInRange(startDate, endDate));
+        displayChart(results, selectedCoins, getDatesInRange(startDate, endDate));
     } catch (error) {
         console.error('Analysis failed:', error);
-        $('#results').html('<div class="alert alert-danger">An error occurred during analysis. Please try again later.</div>');
+        alert('An error occurred during analysis. Please try again later.');
     } finally {
         $('#loading').hide();
     }
@@ -89,9 +62,9 @@ async function analyzeData() {
 async function fetchKlines(coin, interval, date) {
     const startTime = new Date(date + 'T00:00:00Z').getTime();
     const endTime = startTime + 86400000; // 24 hours
-    const response = await fetch(
-        `https://api.binance.com/api/v3/klines?symbol=${coin}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=1000`
-    );
+    const url = `https://api.binance.com/api/v3/klines?symbol=${coin}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=1000`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to fetch klines for ${coin} on ${date}: ${response.status}`);
     const data = await response.json();
     return data.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) }));
 }
@@ -180,30 +153,54 @@ function getDatesInRange(start, end) {
     return dates;
 }
 
-// Display results in a table
-function displayResults(results, coins, dates) {
-    const table = $('<table class="table table-bordered table-hover"></table>');
-    const headerRow = $('<tr><th scope="col">Date</th></tr>');
-    coins.forEach(coin => headerRow.append(`<th scope="col">${coin}</th>`));
-    table.append(headerRow);
-
-    dates.forEach(date => {
-        const row = $(`<tr><td>${date}</td></tr>`);
-        coins.forEach(coin => {
-            const roi = results[date][coin];
-            const cell = $('<td></td>');
-            if (roi !== null) {
-                cell.text(roi.toFixed(2) + '%');
-                if (roi > 3) cell.addClass('green');
-                else if (roi > 0) cell.addClass('yellow');
-                else cell.addClass('red');
-            } else {
-                cell.text('–');
-            }
-            row.append(cell);
-        });
-        table.append(row);
+// Display results in a chart
+function displayChart(results, coins, dates) {
+    const ctx = document.getElementById('roiChart').getContext('2d');
+    const datasets = coins.map(coin => {
+        const data = dates.map(date => results[date][coin]);
+        return {
+            label: coin,
+            data: data,
+            borderColor: getRandomColor(),
+            fill: false
+        };
     });
 
-    $('#results').html(table);
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: dates,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: { display: true },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) label += ': ';
+                            if (context.parsed.y !== null) label += context.parsed.y.toFixed(2) + '%';
+                            return label;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { display: true, title: { display: true, text: 'Date' } },
+                y: { display: true, title: { display: true, text: 'ROI (%)' } }
+            }
+        }
+    });
+}
+
+// Helper function to generate random colors
+function getRandomColor() {
+    const letters = '0123456789ABCDEF';
+    let color = '#';
+    for (let i = 0; i < 6; i++) {
+        color += letters[Math.floor(Math.random() * 16)];
+    }
+    return color;
 }
