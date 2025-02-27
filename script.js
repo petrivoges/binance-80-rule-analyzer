@@ -3,6 +3,8 @@ $(document).ready(function() {
     $('#analyze').click(analyzeData);
 });
 
+let currentChart; // Tracks the current chart instance
+
 // Initialize coin dropdown with search functionality
 async function initCoinSelect() {
     try {
@@ -80,12 +82,12 @@ async function fetchKlines(coin, interval, date) {
         allKlines = allKlines.concat(data);
         console.log(`Fetched ${data.length} klines for ${coin} on ${date} in batch. Total klines: ${allKlines.length}`);
         lastTime = data[data.length - 1][6] + 1; // Next start time (close time + 1ms)
-        await new Promise(r => setTimeout(r, 200)); // Delay to avoid rate limits
+        await new Promise(r => setTimeout(r, 400)); // Delay to avoid rate limits
     }
     return allKlines.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) }));
 }
 
-// Calculate value area (VAL and VAH) for 80% of volume with edge case handling
+// Calculate value area (VAL and VAH) for 80% of volume with logging
 function calculateValueArea(klines, coin, date) {
     if (klines.length === 0) {
         console.warn(`No kline data for value area calculation for coin: ${coin}, date: ${date}`);
@@ -127,10 +129,11 @@ function calculateValueArea(klines, coin, date) {
             break;
         }
     }
+    console.log(`Value area for ${coin} on ${date}: VAL = ${val.toFixed(2)}, VAH = ${vah.toFixed(2)}`);
     return { val, vah };
 }
 
-// Analyze a coin for a single day with logging for edge cases
+// Analyze a coin for a single day with detailed trade logging
 async function analyzeCoinForDay(coin, date) {
     const prevDay = new Date(date);
     prevDay.setDate(prevDay.getDate() - 1);
@@ -149,19 +152,25 @@ async function analyzeCoinForDay(coin, date) {
         return null;
     }
 
-    if (currentKlines[0].open >= valueArea.val) return null; // Open not below VAL
+    if (currentKlines[0].open >= valueArea.val) {
+        console.log(`No trade triggered for ${coin} on ${date}: Open price ${currentKlines[0].open.toFixed(2)} >= VAL ${valueArea.val.toFixed(2)}`);
+        return null;
+    }
 
     for (let i = 1; i < currentKlines.length; i++) {
         if (currentKlines[i-1].close > valueArea.val && currentKlines[i].close > valueArea.val) {
             const buyPrice = currentKlines[i].close;
             const sellPrice = currentKlines[currentKlines.length - 1].close;
-            return ((sellPrice - buyPrice) / buyPrice) * 100;
+            const roi = ((sellPrice - buyPrice) / buyPrice) * 100;
+            console.log(`Trade triggered for ${coin} on ${date}: Buy at ${buyPrice.toFixed(2)}, Sell at ${sellPrice.toFixed(2)}, ROI = ${roi.toFixed(2)}%`);
+            return roi;
         }
     }
+    console.log(`No trade triggered for ${coin} on ${date}: Price did not cross into value area after opening outside.`);
     return null;
 }
 
-// Analyze all coins over the date range with increased delay
+// Analyze all coins over the date range
 async function analyzeCoins(coins, startDate, endDate) {
     const dates = getDatesInRange(startDate, endDate);
     const results = {};
@@ -170,7 +179,7 @@ async function analyzeCoins(coins, startDate, endDate) {
         results[date] = {};
         for (const coin of coins) {
             results[date][coin] = await analyzeCoinForDay(coin, date);
-            await new Promise(r => setTimeout(r, 400)); // Delay to avoid rate limits
+            await new Promise(r => setTimeout(r, 200)); // Delay to avoid rate limits
         }
     }
     return results;
@@ -188,12 +197,15 @@ function getDatesInRange(start, end) {
     return dates;
 }
 
-// Display results in a chart with check for canvas element
+// Display results in a chart, destroying any previous chart
 function displayChart(results, coins, dates) {
     const canvas = document.getElementById('roiChart');
     if (!canvas) {
         console.error('Canvas element with ID "roiChart" not found in DOM');
         return;
+    }
+    if (currentChart) {
+        currentChart.destroy(); // Destroy previous chart to avoid "Canvas is already in use" error
     }
     const ctx = canvas.getContext('2d');
     const datasets = coins.map(coin => {
@@ -206,7 +218,7 @@ function displayChart(results, coins, dates) {
         };
     });
 
-    new Chart(ctx, {
+    currentChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: dates,
