@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance 80% Rule Analyzer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Binance 80% Rule Historical Analyzer</h1>
+    <label for="coins">Select Coins (up to 10):</label>
+    <select id="coins" multiple size="10">
+        <!-- Options will be populated by JavaScript -->
+    </select>
+    <br>
+    <label for="startDate">Start Date:</label>
+    <input type="date" id="startDate">
+    <label for="endDate">End Date:</label>
+    <input type="date" id="endDate">
+    <br>
+    <button id="analyze">Analyze</button>
+    <div id="results"></div>
+    <script src="script.js"></script>
+</body>
+</html>
