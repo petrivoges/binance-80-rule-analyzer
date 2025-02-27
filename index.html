@@ -11,7 +11,7 @@
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        /* Optional: Style the table for better readability */
+        /* Style the table for better readability */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -27,6 +27,10 @@
         }
         .coin-section {
             margin-bottom: 30px;
+        }
+        /* Ensure enough space for the Highest Price column */
+        th:nth-child(7), td:nth-child(7) {
+            min-width: 100px;
         }
     </style>
 </head>

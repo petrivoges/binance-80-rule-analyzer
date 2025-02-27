@@ -85,7 +85,12 @@ async function fetchKlines(coin, interval, date) {
         lastTime = data[data.length - 1][6] + 1; // Next start time (close time + 1ms)
         await new Promise(r => setTimeout(r, 200)); // Delay to avoid rate limits
     }
-    return allKlines.map(d => ({ open: parseFloat(d[1]), close: parseFloat(d[4]), volume: parseFloat(d[5]) }));
+    return allKlines.map(d => ({
+        open: parseFloat(d[1]),
+        high: parseFloat(d[2]), // Add high price
+        close: parseFloat(d[4]),
+        volume: parseFloat(d[5])
+    }));
 }
 
 // Calculate value area (VAL and VAH) for 70% of volume with logging
@@ -114,7 +119,7 @@ function calculateValueArea(klines, coin, date) {
     let coveredVolume = priceVolume[poc];
     let val = poc, vah = poc;
 
-    while (coveredVolume < 0.7 * totalVolume) { // Changed to 70% as per your specification
+    while (coveredVolume < 0.7 * totalVolume) {
         const valIdx = sortedPrices.indexOf(val);
         const vahIdx = sortedPrices.indexOf(vah);
         const below = valIdx > 0 ? sortedPrices[valIdx - 1] : null;
@@ -144,14 +149,17 @@ async function analyzeCoinForDay(coin, date) {
     const valueArea = calculateValueArea(prevKlines, coin, prevDayStr);
     if (valueArea.val === null || valueArea.vah === null) {
         console.warn(`Skipping analysis for ${coin} on ${date} due to invalid value area for ${prevDayStr}`);
-        return { prevVal: null, prevVah: null, tradeTriggered: false, entryPrice: null, exitPrice: null, roi: null };
+        return { prevVal: null, prevVah: null, tradeTriggered: false, entryPrice: null, exitPrice: null, roi: null, highestPrice: null };
     }
 
     const currentKlines = await fetchKlines(coin, '30m', date);
     if (currentKlines.length === 0) {
         console.warn(`No kline data for analysis for coin: ${coin}, date: ${date}`);
-        return { prevVal: valueArea.val, prevVah: valueArea.vah, tradeTriggered: false, entryPrice: null, exitPrice: null, roi: null };
+        return { prevVal: valueArea.val, prevVah: valueArea.vah, tradeTriggered: false, entryPrice: null, exitPrice: null, roi: null, highestPrice: null };
     }
+
+    // Calculate the highest price for the day
+    const highestPrice = Math.max(...currentKlines.map(k => k.high));
 
     const openPrice = currentKlines[0].open;
     let tradeTriggered = false;
@@ -192,7 +200,8 @@ async function analyzeCoinForDay(coin, date) {
         tradeTriggered: tradeTriggered,
         entryPrice: entryPrice,
         exitPrice: tradeTriggered ? exitPrice : null,
-        roi: tradeTriggered ? roi : 0
+        roi: tradeTriggered ? roi : 0,
+        highestPrice: highestPrice // Add highest price to results
     };
 }
 
@@ -241,6 +250,7 @@ function displayTable(results, coins, dates) {
                             <th>Trade Triggered</th>
                             <th>Entry Price</th>
                             <th>Exit Price</th>
+                            <th>Highest Price</th> <!-- New column -->
                             <th>ROI (%)</th>
                         </tr>
                     </thead>
@@ -255,6 +265,7 @@ function displayTable(results, coins, dates) {
                                     <td>${data.tradeTriggered ? 'Yes' : 'No'}</td>
                                     <td>${data.entryPrice ? data.entryPrice.toFixed(2) : '-'}</td>
                                     <td>${data.exitPrice ? data.exitPrice.toFixed(2) : '-'}</td>
+                                    <td>${data.highestPrice ? data.highestPrice.toFixed(2) : '-'}</td> <!-- Display highest price -->
                                     <td>${data.roi !== null ? data.roi.toFixed(2) : '0.00'}</td>
                                 </tr>
                             `;
