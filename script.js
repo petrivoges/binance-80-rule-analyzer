@@ -3,8 +3,6 @@ $(document).ready(function() {
     $('#analyze').click(analyzeData);
 });
 
-let currentChart; // Tracks the current chart instance
-
 // Initialize coin dropdown with search functionality
 async function initCoinSelect() {
     try {
@@ -58,7 +56,6 @@ async function analyzeData() {
     try {
         const results = await analyzeCoins(selectedCoins, startDate, endDate);
         displayTable(results, selectedCoins, getDatesInRange(startDate, endDate));
-        displayChart(results, selectedCoins, getDatesInRange(startDate, endDate));
     } catch (error) {
         console.error('Analysis failed:', error);
         alert('An error occurred during analysis. Please try again later.');
@@ -67,7 +64,7 @@ async function analyzeData() {
     }
 }
 
-// Fetch k-line data from Binance API with pagination and logging
+// Fetch k-line data from Binance API with timestamps
 async function fetchKlines(coin, interval, date) {
     const startTime = new Date(date + 'T00:00:00Z').getTime();
     const endTime = startTime + 86400000; // 24 hours
@@ -80,25 +77,23 @@ async function fetchKlines(coin, interval, date) {
         if (!response.ok) throw new Error(`Failed to fetch klines for ${coin} on ${date}: ${response.status}`);
         const data = await response.json();
         if (data.length === 0) break;
-        allKlines = allKlines.concat(data);
-        console.log(`Fetched ${data.length} klines for ${coin} on ${date} in batch. Total klines: ${allKlines.length}`);
+        allKlines = allKlines.concat(data.map(d => ({
+            open: parseFloat(d[1]),
+            high: parseFloat(d[2]),
+            close: parseFloat(d[4]),
+            volume: parseFloat(d[5]),
+            openTime: d[0], // milliseconds
+            closeTime: d[6] // milliseconds
+        })));
         lastTime = data[data.length - 1][6] + 1; // Next start time (close time + 1ms)
         await new Promise(r => setTimeout(r, 200)); // Delay to avoid rate limits
     }
-    return allKlines.map(d => ({
-        open: parseFloat(d[1]),
-        high: parseFloat(d[2]), // Add high price
-        close: parseFloat(d[4]),
-        volume: parseFloat(d[5])
-    }));
+    return allKlines;
 }
 
-// Calculate value area (VAL and VAH) for 70% of volume with logging
-function calculateValueArea(klines, coin, date) {
-    if (klines.length === 0) {
-        console.warn(`No kline data for value area calculation for coin: ${coin}, date: ${date}`);
-        return { val: null, vah: null };
-    }
+// Calculate value area (VAL and VAH) for 70% of volume
+function calculateValueArea(klines) {
+    if (klines.length === 0) return { val: null, vah: null };
 
     const priceVolume = {};
     let totalVolume = 0;
@@ -110,10 +105,7 @@ function calculateValueArea(klines, coin, date) {
     });
 
     const sortedPrices = Object.keys(priceVolume).map(Number).sort((a, b) => a - b);
-    if (sortedPrices.length === 0 || totalVolume === 0) {
-        console.warn(`No valid price data or total volume is zero for coin: ${coin}, date: ${date}`);
-        return { val: null, vah: null };
-    }
+    if (sortedPrices.length === 0 || totalVolume === 0) return { val: null, vah: null };
 
     const poc = sortedPrices.reduce((max, p) => priceVolume[p] > priceVolume[max] ? p : max, sortedPrices[0]);
     let coveredVolume = priceVolume[poc];
@@ -135,46 +127,69 @@ function calculateValueArea(klines, coin, date) {
             break;
         }
     }
-    console.log(`Value area for ${coin} on ${date}: VAL = ${val.toFixed(2)}, VAH = ${vah.toFixed(2)}`);
     return { val, vah };
 }
 
-// Analyze a coin for a single day with detailed trade logging
+// Analyze a coin for a single day
 async function analyzeCoinForDay(coin, date) {
     const prevDay = new Date(date);
     prevDay.setDate(prevDay.getDate() - 1);
     const prevDayStr = prevDay.toISOString().split('T')[0];
 
     const prevKlines = await fetchKlines(coin, '1m', prevDayStr);
-    const valueArea = calculateValueArea(prevKlines, coin, prevDayStr);
+    const valueArea = calculateValueArea(prevKlines);
     if (valueArea.val === null || valueArea.vah === null) {
-        console.warn(`Skipping analysis for ${coin} on ${date} due to invalid value area for ${prevDayStr}`);
-        return { prevVal: null, prevVah: null, tradeTriggered: false, entryPrice: null, exitPrice: null, roi: null, highestPrice: null };
+        return {
+            prevVal: null,
+            prevVah: null,
+            tradeTriggered: false,
+            entryPrice: null,
+            entryPriceTime: null,
+            proposedProfitPrice: null,
+            pppTime: null,
+            highestPrice: null,
+            diff: null
+        };
     }
 
     const currentKlines = await fetchKlines(coin, '30m', date);
     if (currentKlines.length === 0) {
-        console.warn(`No kline data for analysis for coin: ${coin}, date: ${date}`);
-        return { prevVal: valueArea.val, prevVah: valueArea.vah, tradeTriggered: false, entryPrice: null, exitPrice: null, roi: null, highestPrice: null };
+        return {
+            prevVal: valueArea.val,
+            prevVah: valueArea.vah,
+            tradeTriggered: false,
+            entryPrice: null,
+            entryPriceTime: null,
+            proposedProfitPrice: null,
+            pppTime: null,
+            highestPrice: null,
+            diff: null
+        };
     }
 
-    // Calculate the highest price for the day
     const highestPrice = Math.max(...currentKlines.map(k => k.high));
-
     const openPrice = currentKlines[0].open;
     let tradeTriggered = false;
     let entryPrice = null;
-    const exitPrice = currentKlines[currentKlines.length - 1].close;
-    let roi = null;
+    let entryPriceTime = null;
+    let proposedProfitPrice = null;
+    let pppTime = null;
+    let diff = null;
 
-    // Check if price opens below VAL or above VAH and crosses into value area
     if (openPrice < valueArea.val) {
         for (let i = 1; i < currentKlines.length; i++) {
             if (currentKlines[i-1].close <= valueArea.val && currentKlines[i].close > valueArea.val) {
                 tradeTriggered = true;
                 entryPrice = currentKlines[i].close;
-                roi = ((exitPrice - entryPrice) / entryPrice) * 100;
-                console.log(`Trade triggered for ${coin} on ${date} (below VAL): Buy at ${entryPrice.toFixed(2)}, Sell at ${exitPrice.toFixed(2)}, ROI = ${roi.toFixed(2)}%`);
+                entryPriceTime = currentKlines[i].closeTime;
+                proposedProfitPrice = entryPrice * 1.03;
+                for (let j = i; j < currentKlines.length; j++) {
+                    if (currentKlines[j].high >= proposedProfitPrice) {
+                        pppTime = currentKlines[j].openTime;
+                        break;
+                    }
+                }
+                diff = entryPrice - highestPrice;
                 break;
             }
         }
@@ -183,15 +198,18 @@ async function analyzeCoinForDay(coin, date) {
             if (currentKlines[i-1].close >= valueArea.vah && currentKlines[i].close < valueArea.vah) {
                 tradeTriggered = true;
                 entryPrice = currentKlines[i].close;
-                roi = ((exitPrice - entryPrice) / entryPrice) * 100;
-                console.log(`Trade triggered for ${coin} on ${date} (above VAH): Sell at ${entryPrice.toFixed(2)}, Buy at ${exitPrice.toFixed(2)}, ROI = ${roi.toFixed(2)}%`);
+                entryPriceTime = currentKlines[i].closeTime;
+                proposedProfitPrice = entryPrice * 1.03;
+                for (let j = i; j < currentKlines.length; j++) {
+                    if (currentKlines[j].high >= proposedProfitPrice) {
+                        pppTime = currentKlines[j].openTime;
+                        break;
+                    }
+                }
+                diff = entryPrice - highestPrice;
                 break;
             }
         }
-    }
-
-    if (!tradeTriggered) {
-        console.log(`No trade triggered for ${coin} on ${date}: Open price ${openPrice.toFixed(2)} not outside value area or didn’t cross in (VAL: ${valueArea.val.toFixed(2)}, VAH: ${valueArea.vah.toFixed(2)})`);
     }
 
     return {
@@ -199,9 +217,11 @@ async function analyzeCoinForDay(coin, date) {
         prevVah: valueArea.vah,
         tradeTriggered: tradeTriggered,
         entryPrice: entryPrice,
-        exitPrice: tradeTriggered ? exitPrice : null,
-        roi: tradeTriggered ? roi : 0,
-        highestPrice: highestPrice // Add highest price to results
+        entryPriceTime: entryPriceTime,
+        proposedProfitPrice: proposedProfitPrice,
+        pppTime: pppTime,
+        highestPrice: highestPrice,
+        diff: diff
     };
 }
 
@@ -232,10 +252,18 @@ function getDatesInRange(start, end) {
     return dates;
 }
 
+// Format timestamp to GMT+2
+function formatTime(timestamp) {
+    if (!timestamp) return '-';
+    const date = new Date(timestamp);
+    date.setHours(date.getHours() + 2); // Adjust to GMT+2
+    return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 // Display results in a table
 function displayTable(results, coins, dates) {
     const resultsDiv = $('#results');
-    resultsDiv.empty(); // Clear previous results
+    resultsDiv.empty();
 
     coins.forEach(coin => {
         const tableHtml = `
@@ -249,14 +277,20 @@ function displayTable(results, coins, dates) {
                             <th>Previous Day VAH</th>
                             <th>Trade Triggered</th>
                             <th>Entry Price</th>
-                            <th>Exit Price</th>
-                            <th>Highest Price</th> <!-- New column -->
-                            <th>ROI (%)</th>
+                            <th>Entry Price Time</th>
+                            <th>Proposed Profit Price</th>
+                            <th>PPP Time</th>
+                            <th>Highest Price</th>
+                            <th>Diff</th>
                         </tr>
                     </thead>
                     <tbody>
                         ${dates.map(date => {
                             const data = results[date][coin];
+                            const entryPriceTime = formatTime(data.entryPriceTime);
+                            const pppTime = formatTime(data.pppTime);
+                            const diffClass = data.diff > 0 ? 'diff-positive' : data.diff < 0 ? 'diff-negative' : '';
+                            const diffDisplay = data.diff !== null ? `<span class="${diffClass}">${data.diff.toFixed(2)}</span>` : '-';
                             return `
                                 <tr>
                                     <td>${date}</td>
@@ -264,9 +298,11 @@ function displayTable(results, coins, dates) {
                                     <td>${data.prevVah ? data.prevVah.toFixed(2) : 'N/A'}</td>
                                     <td>${data.tradeTriggered ? 'Yes' : 'No'}</td>
                                     <td>${data.entryPrice ? data.entryPrice.toFixed(2) : '-'}</td>
-                                    <td>${data.exitPrice ? data.exitPrice.toFixed(2) : '-'}</td>
-                                    <td>${data.highestPrice ? data.highestPrice.toFixed(2) : '-'}</td> <!-- Display highest price -->
-                                    <td>${data.roi !== null ? data.roi.toFixed(2) : '0.00'}</td>
+                                    <td>${entryPriceTime}</td>
+                                    <td>${data.proposedProfitPrice ? data.proposedProfitPrice.toFixed(2) : '-'}</td>
+                                    <td>${pppTime}</td>
+                                    <td>${data.highestPrice ? data.highestPrice.toFixed(2) : '-'}</td>
+                                    <td>${diffDisplay}</td>
                                 </tr>
                             `;
                         }).join('')}
@@ -276,64 +312,4 @@ function displayTable(results, coins, dates) {
         `;
         resultsDiv.append(tableHtml);
     });
-}
-
-// Display results in a chart
-function displayChart(results, coins, dates) {
-    const canvas = document.getElementById('roiChart');
-    if (!canvas) {
-        console.error('Canvas element with ID "roiChart" not found in DOM');
-        return;
-    }
-    if (currentChart) {
-        currentChart.destroy(); // Destroy previous chart to avoid "Canvas is already in use" error
-    }
-    const ctx = canvas.getContext('2d');
-    const datasets = coins.map(coin => {
-        const data = dates.map(date => results[date][coin].roi || 0);
-        return {
-            label: coin,
-            data: data,
-            borderColor: getRandomColor(),
-            fill: false
-        };
-    });
-
-    currentChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: dates,
-            datasets: datasets
-        },
-        options: {
-            responsive: true,
-            plugins: {
-                legend: { display: true },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            let label = context.dataset.label || '';
-                            if (label) label += ': ';
-                            if (context.parsed.y !== null) label += context.parsed.y.toFixed(2) + '%';
-                            return label;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: { display: true, title: { display: true, text: 'Date' } },
-                y: { display: true, title: { display: true, text: 'ROI (%)' } }
-            }
-        }
-    });
-}
-
-// Helper function to generate random colors
-function getRandomColor() {
-    const letters = '0123456789ABCDEF';
-    let color = '#';
-    for (let i = 0; i < 6; i++) {
-        color += letters[Math.floor(Math.random() * 16)];
-    }
-    return color;
 }
