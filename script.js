@@ -206,7 +206,7 @@ async function analyzeCoinForDay(coin, date) {
                         break;
                     }
                 }
-                diff = entryPrice - highestPrice;
+                diff = highestPrice - entryPrice;
                 break;
             }
         }
